@@ -1,0 +1,19 @@
+{
+  "name": "md-parser",
+  "version": "0.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "tape test/*.js"
+  },
+  "author": "Alan Shaw",
+  "license": "MIT",
+  "dependencies": {
+    "duplexer2": "0.0.2",
+    "through2": "^0.6.1"
+  },
+  "devDependencies": {
+    "multiline": "^1.0.0",
+    "tape": "^2.14.0"
+  }
+}
