@@ -8,6 +8,8 @@ test("parse", function (t) {
     # Heading 1
     Some *italic* and __bold__ in the title
     **and** also in some _text_
+    ## Heading 2
+    Some more text
   */})
 
   logger(md)
