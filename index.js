@@ -1,215 +1,136 @@
 var mdtok = require("md-tokenizer")
 var through = require("through2")
 var duplexer = require("duplexer2")
+var Block = require("./block")
 
-function Env (parent) {
-  this.parent = parent
-  this.chunks = []
-  this.inline = false
-  this.tagged = false
-  this.closed = false
-  this.contentQueue = []
+var emptyToken = {type: "whitespace", content: ""}
+
+function inList (bl) {
+  return bl.prev.tag.name == "li"
 }
 
-function closeBlock (env, tr) {
-  if (env.closed) return env
-
-  while (env.inline) {
-    tr.push("</" + env.closeTag + ">")
-    env = env.parent
-  }
-
-  if (env.closeTag) {
-    tr.push("</" + env.closeTag + ">")
-  }
-
-  env.closed = true
-  return env
+function inEmphasis (bl) {
+  return bl.tag.name == "em" || bl.tag.name == "strong"
 }
 
-function closeParentBlock (env, tr) {
-  if (env.parent && !env.parent.closed) {
-    env.parent = closeBlock(env.parent, tr)
-  }
-  return env
-}
-
-function closeParentBlocks (env, tr) {
-  var origEnv = env
-  env = env.parent
-  while (env) {
-    env = closeBlock(env, tr)
-    env = env.parent
-  }
-  return origEnv
-}
-
-function openBlock (env, tr, tag) {
-  env = new Env(env)
-  if (tr && tag) {
-    startTag(env, tr, tag)
-  }
-  return env
-}
-
-function startTag (env, tr, tag) {
-  while (env.contentQueue.length) {
-    tr.push(env.contentQueue.shift())
-  }
-  tr.push("<" + tag + ">")
-  env.closeTag = tag
-  env.tagged = true
-  return env
-}
-
-function pushOrQueue (env, tr, content) {
-  if (env.tagged) tr.push(content)
-  else env.contentQueue.push(content)
-}
-
-function inList (env) {
-  return env.parent.closeTag == "li"
-}
-
-function inEmphasis (env) {
-  return env.closeTag == "em" || env.closeTag == "strong"
-}
-
-function parse (chunk, env, tr) {
-  switch (chunk.type) {
+function parse (token, bl, tr) {
+  switch (token.type) {
     case "heading":
-      if (!env.tagged) {
-        env = closeParentBlocks(env, tr)
-        env = startTag(env, tr, "h" + chunk.content.length)
+      if (!bl.tag.name) {
+        bl.closePrev()
+        bl.open("h" + token.content.length)
       } else {
-        tr.push(chunk.content)
+        tr.push(token.content)
       }
       break
     case "star":
-      if (!env.tagged) {
+      if (!bl.tag.name) {
 
-        if (!inList(env)) {
-          env = closeParentBlocks(env, tr)
-          env = startTag(env, tr, "ul")
-          env = openBlock(env, tr, "li")
+        if (!inList(bl)) {
+          bl.closeAllPrev()
+          bl.open("ul")
+          bl = new Block(bl, tr, "li")
         } else {
-
           // We are already in a list
+          var ul = bl
 
-          var ul = env
-
-          while (ul.closeTag != "ul") {
-            ul = ul.parent
+          while (ul.tag.name != "ul") {
+            ul = ul.prev
           }
 
-          var whitespaceChunk = {type: "whitespace", content: ""}
-
-          var currentIndent = ul.chunks[0] || whitespaceChunk
+          var currentIndent = ul.tokens[0] || emptyToken
 
           if (currentIndent.type != "whitespace") {
-            currentIndent = whitespaceChunk
+            currentIndent = emptyToken
           }
 
-          var newIndent = env.chunks[0] || whitespaceChunk
+          var newIndent = bl.tokens[0] || emptyToken
 
           if (newIndent.type != "whitespace") {
-            newIndent = whitespaceChunk
+            newIndent = emptyToken
           }
 
           if (currentIndent.content.length == newIndent.content.length) {
             // Same level, same indent
-            env = closeParentBlock(env, tr)
-            env = startTag(env, tr, "li")
+            bl.closePrev()
+            bl.open("li")
           } else if (currentIndent.content.length < newIndent.content.length) {
             // Deeper level
-            env = startTag(env, tr, "ul")
-            env = openBlock(env, tr, "li")
+            bl.open("ul")
+            bl = new Block(bl, tr, "li")
           } else if (currentIndent.content.length > newIndent.content.length) {
             // Shallower level
             // TODO: determine correct level
-            env = closeParentBlock(env, tr)
-            env = closeBlock(ul, tr)
-            env = closeBlock(ul.parent, tr)
-            env = openBlock(env, tr, "li")
+            bl.closePrev()
+            ul.close()
+            ul.prev.close()
+            bl = new Block(bl, tr, "li")
           }
-
-          //env = closeParentBlock(env, tr) // now env -> ul
         }
       } else {
-        if (!inEmphasis(env)) {
-          env = new Env(env)
-          env = startTag(env, tr, "em")
-          env.inline = true
+        if (!inEmphasis(bl)) {
+          bl = new Block(bl, tr, "em", true)
         } else {
-          tr.push("</" + env.closeTag + ">")
-          env = env.parent
+          tr.push("</" + bl.tag.name + ">")
+          bl = bl.prev
         }
       }
       break
     case "emphasis":
-      if (!env.tagged) {
-        env = closeParentBlocks(env, tr)
-        env = startTag(env, tr, "p")
+      if (!bl.tag.name) {
+        bl.closeAllPrev().open("p")
       }
 
-      if (!inEmphasis(env)) {
-        env = new Env(env)
-        if (chunk.content == "__" || chunk.content == "**") {
-          env = startTag(env, tr, "strong")
+      if (!inEmphasis(bl)) {
+        bl = new Block(bl, tr)
+        if (token.content == "__" || token.content == "**") {
+          bl = new Block(bl, tr, "strong", true)
         } else {
-          env = startTag(env, tr, "em")
+          bl = new Block(bl, tr, "em", true)
         }
-        env.inline = true
       } else {
-        tr.push("</" + env.closeTag + ">")
-        env = env.parent
+        tr.push("</" + bl.tag.name + ">")
+        bl = bl.prev
       }
       break
     case "whitespace":
-      pushOrQueue(env, tr, chunk.content)
+      bl.pushOrQueueContent(token.content)
       break
     case "text":
-      if (!env.tagged) {
-        env = closeParentBlocks(env, tr)
-        env = startTag(env, tr, "p")
+      if (!bl.tag.name) {
+        bl.closeAllPrev().open("p")
       }
-      tr.push(chunk.content)
+      tr.push(token.content)
       break
     case "new line":
-      env = openBlock(env)
-      pushOrQueue(env, tr, chunk.content)
+      bl = new Block(bl, tr)
+      bl.pushOrQueueContent(token.content)
       break
     case "end":
-      env = closeParentBlocks(env, tr)
-      env = closeBlock(env, tr)
+      bl.closeAllPrev().close()
       break
-    default: throw new Error("Failed to parse " + chunk.content)
+    default: throw new Error("Failed to parse " + token.content)
   }
 
-  if (chunk.type != "new line") {
-    env.chunks.unshift(chunk)
+  if (token.type != "new line") {
+    bl.tokens.unshift(token)
   }
 
-  return env
+  return bl
 }
 
 module.exports = function (opts) {
-  var env = new Env
-  env.ended = true
+  var bl = null
 
-  var parser = through.obj(function (chunk, enc, cb) {
-    env = parse(chunk, env, this)
+  var parser = through.obj(function (token, enc, cb) {
+    bl = parse(token, bl, this)
     cb()
   }, function () {
-    parse({type: "end"}, env, this)
+    parse({type: "end"}, bl, this)
     this.push(null)
   })
 
-  /*var push = parser.push
-  parser.push = function (data) {
-    console.log(data)
-    push.call(parser, data)
-  }*/
+  bl = new Block(null, parser)
 
   var tokenizer = mdtok()
   tokenizer.pipe(parser)

@@ -13,6 +13,8 @@ test("parse", function (t) {
     * Bullet 1
         * Sub bullet 1
         * Sub bullet 2
+          * Third
+          * Third *2*
         * Sub bullet 3
     * Bullet 2
     * Bullet 3
