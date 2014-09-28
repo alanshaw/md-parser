@@ -5,11 +5,18 @@ var duplexer = require("duplexer2")
 function Block (prev, tagName) {
   this.prev = prev // The previous block
   this.indent = ""
-  this.tagName = tagName
+  this.tagName = null
   this.contents = [] // String, function
-  this.transparent = false
+
+  this.transparent = false // Flag as container element e.g. ul/ol
+  this.ignoreUntil = null // non parsed area until this token type
+
+  // For inline elements
   this.inEmphasis = false
   this.inStrongEmphasis = false
+  this.inInlineCode = false
+
+  if (tagName) this.open(tagName)
 }
 
 Block.prototype.open = function (tagName) {
@@ -64,15 +71,7 @@ function closeEnds (ends, bl, tr) {
   //console.log("currentIndentAmount", currentIndentAmount)
 
   // Close everything?
-  if (prevIndentAmount > currentIndentAmount && currentIndentAmount == 0) {
-    var end = ends.pop()
-    while (end) {
-      //console.log("</" + end.start.tagName + ">")
-      tr.push("</" + end.start.tagName + ">")
-      end = ends.pop()
-    }
-  // Close subset?
-  } else if (prevIndentAmount >= currentIndentAmount) {
+  if (prevIndentAmount >= currentIndentAmount) {
     for (var j = 0; j < (prevIndentAmount - currentIndentAmount) + 1; j++) {
       var end = ends.pop()
       //console.log("</" + end.start.tagName + ">")
@@ -89,6 +88,11 @@ function closeEnds (ends, bl, tr) {
 }
 
 function parse (token, bl, ends, tr) {
+  if (bl.ignoreUntil && token.type != bl.ignoreUntil) {
+    bl.contents.push(token.content)
+    return {block: bl, ends: ends}
+  }
+
   var oldEnds = ends
 
   switch (token.type) {
@@ -139,6 +143,42 @@ function parse (token, bl, ends, tr) {
         bl.inEmphasis = !bl.inEmphasis
       }
       break
+    case "list item ordered":
+      ends = closeEnds(ends, bl, tr)
+
+      // Something was closed
+      if (oldEnds.length != ends.length) {
+        // Was the last thing closed an <li>?
+        if (oldEnds.slice(ends.length)[0].start.tagName == "li") {
+          // Already in a list
+        } else {
+          // Need to start a new list
+          bl.open("ol")
+          bl.transparent = true
+          ends.push(new BlockEnd(bl))
+          bl = new Block(bl)
+          bl.indent = bl.prev.indent // Maintain indent
+        }
+      } else {
+        bl.open("ol")
+        bl.transparent = true
+        ends.push(new BlockEnd(bl))
+        bl = new Block(bl)
+        bl.indent = bl.prev.indent // Maintain indent
+      }
+
+      bl.open("li")
+      ends.push(new BlockEnd(bl))
+      break
+    case "gt":
+      if (!bl.tagName) {
+        bl.open("blockquote")
+        ends = closeEnds(ends, bl, tr)
+        ends.push(new BlockEnd(bl))
+      } else {
+        bl.contents.push(token.content)
+      }
+      break
     case "emphasis":
       if (!bl.tagName) {
         bl.open("p")
@@ -152,6 +192,30 @@ function parse (token, bl, ends, tr) {
       } else {
         bl.contents.push("<" + (bl.inEmphasis ? "/" : "") + "em>")
         bl.inEmphasis = !bl.inEmphasis
+      }
+      break
+    case "code inline":
+      if (!bl.tagName) {
+        bl.open("p")
+        ends = closeEnds(ends, bl, tr)
+        ends.push(new BlockEnd(bl))
+      }
+
+      bl.contents.push("<" + (bl.inInlineCode ? "/" : "") + "code>")
+      bl.inInlineCode = !bl.inInlineCode
+      break
+    case "code block":
+      if (bl.ignoreUntil) {
+        bl.ignoreUntil = null
+      } else if (!bl.tagName) {
+        bl.open("code")
+        bl.transparent = true
+        ends.push(new BlockEnd(bl))
+        bl = new Block(bl, "pre")
+        ends.push(new BlockEnd(bl))
+        bl.ignoreUntil = "code block"
+      } else {
+        bl.contents.push("<" + (bl.inInlineCode ? "/" : "") + "code>")
       }
       break
     case "whitespace":

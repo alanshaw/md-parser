@@ -14,6 +14,7 @@
   },
   "devDependencies": {
     "concat-stream": "^1.4.6",
+    "marked": "^0.3.2",
     "multiline": "^1.0.0",
     "tape": "^2.14.0"
   }
