@@ -1,263 +1,170 @@
 var mdtok = require("md-tokenizer")
 var through = require("through2")
 var duplexer = require("duplexer2")
+var inherits = require("util").inherits
 
-function Block (prev, tagName) {
-  this.prev = prev // The previous block
-  this.indent = ""
+// Oh WOW lets re-implement a subset of the DOM
+// Yes, I'm actually doing this
+
+function Node () {
+  this.parent = null
+}
+
+function Element () {
+  Node.call(this)
   this.tagName = null
-  this.contents = [] // String, function
+  this.children = []
+  this.indent = 0
+}
+inherits(Element, Node)
 
-  this.transparent = false // Flag as container element e.g. ul/ol
-  this.ignoreUntil = null // non parsed area until this token type
-
-  // For inline elements
-  this.inEmphasis = false
-  this.inStrongEmphasis = false
-  this.inInlineCode = false
-
-  if (tagName) this.open(tagName)
+Element.prototype.appendChild = function (node) {
+  node.parent = this
+  return this.children.push(node)
 }
 
-Block.prototype.open = function (tagName) {
-  this.contents.push(function () {
-    return "<" + this.tagName + ">"
-  })
-  this.tagName = tagName
-  return this
+function Text (content) {
+  Node.call(this)
+  this.content = content || ""
 }
+inherits(Text, Node)
 
-function BlockEnd (start) {
-  this.start = start
+
+function pushNode (node, ts) {
+  if (node instanceof Element) {
+    ts.push("<" + node.tagName + ">")
+    node.children.forEach(function (child) { pushNode(child, ts) })
+    ts.push("</" + node.tagName + ">")
+  } else if (node instanceof Text) {
+    ts.push(node.content)
+  } else {
+    ts.emit("error", new Error("Unknown node type " + node))
+  }
 }
 
 function indentAmount (whitespace) {
   return whitespace[0] == " " ? Math.floor(whitespace.length / 4) : whitespace.length
 }
 
-function closeEnds (ends, bl, tr) {
-  //console.log(ends.map(function (e) {
-  //  return e.start.tagName
-  //}).reverse())
-  if (!bl.prev) return ends
-
-  ends = ends.slice()
-
-  var prev = bl.prev
-  var prevs = []
-
-  while (prev) {
-    prevs.unshift(prev)
-    prev = prev.prev
-  }
-
-  prevs.forEach(function (p) {
-    // Push out all the previous block's content
-    for (var i = 0; i < p.contents.length; i++) {
-      var content = p.contents[i]
-      if (typeof content == "function") {
-        tr.push(content.call(p))
-      } else {
-        tr.push(content)
-      }
-    }
-  })
-
-  // Difference between indent determines how far to chomp through ends
-  var prevIndentAmount = indentAmount(bl.prev.indent)
-  var currentIndentAmount = indentAmount(bl.indent)
-
-  //console.log("prevIndentAmount", prevIndentAmount)
-  //console.log("currentIndentAmount", currentIndentAmount)
-
-  // Close everything?
-  if (prevIndentAmount >= currentIndentAmount) {
-    for (var j = 0; j < (prevIndentAmount - currentIndentAmount) + 1; j++) {
-      var end = ends.pop()
-      //console.log("</" + end.start.tagName + ">")
-      tr.push("</" + end.start.tagName + ">")
-      // If transparent then don't consume an iteration
-      if (end.start.transparent && ends.length) j--
-    }
-  }
-
-  // We no longer need this previous block - send for gc
-  bl.prev = null
-
-  return ends
-}
-
-function parse (token, bl, ends, tr) {
-  if (bl.ignoreUntil && token.type != bl.ignoreUntil) {
-    bl.contents.push(token.content)
-    return {block: bl, ends: ends}
-  }
-
-  var oldEnds = ends
-
+function parse (token, elements) {
   switch (token.type) {
     case "heading":
-      if (!bl.tagName) {
-        bl.open("h" + token.content.length)
-        ends = closeEnds(ends, bl, tr)
-        ends.push(new BlockEnd(bl))
+      if (elements.next && !elements.next.tagName) {
+        elements.next.tagName = "h" + token.content.length
+        elements.current.parent.appendChild(elements.next)
+        elements.current = elements.next
+        elements.next = null
       } else {
-        bl.contents.push(token.content)
+        elements.current.appendChild(new Text(token.content))
       }
-      break
-    case "underline equal":
-      bl.prev.tagName = "h1"
-      break
-    case "underline dash":
-      bl.prev.tagName = "h2"
       break
     case "star":
-      if (!bl.tagName) {
-        ends = closeEnds(ends, bl, tr)
+      if (elements.next && !elements.next.tagName) {
+        elements.next.tagName = "li"
 
-        // Something was closed
-        if (oldEnds.length != ends.length) {
-          // Was the last thing closed an <li>?
-          if (oldEnds.slice(ends.length)[0].start.tagName == "li") {
-            // Already in a list
-          } else {
-            // Need to start a new list
-            bl.open("ul")
-            bl.transparent = true
-            ends.push(new BlockEnd(bl))
-            bl = new Block(bl)
-            bl.indent = bl.prev.indent // Maintain indent
+        // Get closest li
+        var li = elements.current
+
+        while (li != null && li.tagName != "li") {
+          li = li.parent
+        }
+
+        // Are we already in a list?
+        if (!li) {
+          // ul start
+          var ul = new Element
+          ul.tagName = "ul"
+          elements.current.parent.appendChild(ul)
+          elements.current = ul
+
+          elements.current.appendChild(elements.next)
+          elements.current = elements.next
+          elements.next = null
+
+        } else {
+
+          if (li.indent == elements.next.indent) {
+            li.parent.appendChild(elements.next)
+          } else if (li.indent < elements.next.indent) {
+            var ul = new Element
+            ul.tagName = "ul"
+
+            elements.current.appendChild(ul)
+            elements.current = ul
+            ul.appendChild(elements.next)
+
+          } else if (li.indent > elements.next.indent) {
+            var parents = []
+            var parent = elements.current
+
+            while (parent) {
+              if (parent.tagName == "li") {
+                parents.unshift(parent)
+              }
+              parent = parent.parent
+            }
+
+            parents[elements.next.indent].parent.appendChild(elements.next)
           }
-        } else {
-          bl.open("ul")
-          bl.transparent = true
-          ends.push(new BlockEnd(bl))
-          bl = new Block(bl)
-          bl.indent = bl.prev.indent // Maintain indent
+
+          elements.current = elements.next
+          elements.next = null
         }
 
-        bl.open("li")
-        ends.push(new BlockEnd(bl))
       } else {
-        bl.contents.push("<" + (bl.inEmphasis ? "/" : "") + "em>")
-        bl.inEmphasis = !bl.inEmphasis
-      }
-      break
-    case "list item ordered":
-      ends = closeEnds(ends, bl, tr)
-
-      // Something was closed
-      if (oldEnds.length != ends.length) {
-        // Was the last thing closed an <li>?
-        if (oldEnds.slice(ends.length)[0].start.tagName == "li") {
-          // Already in a list
+        if (elements.current.tagName == "em") {
+          // em end
+          elements.current = elements.current.parent
         } else {
-          // Need to start a new list
-          bl.open("ol")
-          bl.transparent = true
-          ends.push(new BlockEnd(bl))
-          bl = new Block(bl)
-          bl.indent = bl.prev.indent // Maintain indent
+          // em start
+          var em = new Element
+          em.tagName = "em"
+          elements.current.appendChild(em)
+          elements.current = em
         }
-      } else {
-        bl.open("ol")
-        bl.transparent = true
-        ends.push(new BlockEnd(bl))
-        bl = new Block(bl)
-        bl.indent = bl.prev.indent // Maintain indent
-      }
-
-      bl.open("li")
-      ends.push(new BlockEnd(bl))
-      break
-    case "gt":
-      if (!bl.tagName) {
-        bl.open("blockquote")
-        ends = closeEnds(ends, bl, tr)
-        ends.push(new BlockEnd(bl))
-      } else {
-        bl.contents.push(token.content)
-      }
-      break
-    case "emphasis":
-      if (!bl.tagName) {
-        bl.open("p")
-        ends = closeEnds(ends, bl, tr)
-        ends.push(new BlockEnd(bl))
-      }
-
-      if (token.content == "__" || token.content == "**") {
-        bl.contents.push("<" + (bl.inStrongEmphasis ? "/" : "") + "strong>")
-        bl.inStrongEmphasis = !bl.inStrongEmphasis
-      } else {
-        bl.contents.push("<" + (bl.inEmphasis ? "/" : "") + "em>")
-        bl.inEmphasis = !bl.inEmphasis
-      }
-      break
-    case "code inline":
-      if (!bl.tagName) {
-        bl.open("p")
-        ends = closeEnds(ends, bl, tr)
-        ends.push(new BlockEnd(bl))
-      }
-
-      bl.contents.push("<" + (bl.inInlineCode ? "/" : "") + "code>")
-      bl.inInlineCode = !bl.inInlineCode
-      break
-    case "code block":
-      if (bl.ignoreUntil) {
-        bl.ignoreUntil = null
-      } else if (!bl.tagName) {
-        bl.open("code")
-        bl.transparent = true
-        ends.push(new BlockEnd(bl))
-        bl = new Block(bl, "pre")
-        ends.push(new BlockEnd(bl))
-        bl.ignoreUntil = "code block"
-      } else {
-        bl.contents.push("<" + (bl.inInlineCode ? "/" : "") + "code>")
       }
       break
     case "whitespace":
-      if (!bl.tagName) {
-        bl.indent = token.content
+      if (elements.next && !elements.next.tagName) {
+        elements.next.indent = indentAmount(token.content)
+      } else {
+        elements.current.appendChild(new Text(token.content))
       }
-      bl.contents.push(token.content)
       break
     case "text":
-      if (!bl.tagName) {
-        bl.open("p")
-        ends = closeEnds(ends, bl, tr)
-        ends.push(new BlockEnd(bl))
+      if (elements.next && !elements.next.tagName) {
+        elements.next.tagName = "p"
+        elements.current.parent.appendChild(elements.next)
+        elements.current = elements.next
+        elements.next = null
       }
-      bl.contents.push(token.content)
+      elements.current.appendChild(new Text(token.content))
       break
     case "new line":
-      bl = new Block(bl)
-      bl.contents.push(token.content)
-      break
-    case "end":
-      closeEnds(ends, new Block(bl), tr)
+      elements.next = new Element
       break
     default: throw new Error("Unknown token '" + token.type + "' with content '" + token.content + "'")
   }
 
-  return {block: bl, ends: ends}
+  return elements
 }
 
 module.exports = function (opts) {
-  var bl = new Block()
-  var ends = []
+  var root = new Element
+  var current = new Text
+  root.appendChild(current)
+  var elements = {current: current, next: new Element}
 
   var parser = through.obj(function (token, enc, cb) {
-    var bits = parse(token, bl, ends, this)
-    bl = bits.block
-    ends = bits.ends
+    elements = parse(token, elements)
+
+    if (root.children.length > 1) {
+      pushNode(root.children.splice(0, 1)[0], this)
+    }
+
     cb()
   }, function () {
-    parse({type: "end"}, bl, ends, this)
-    bl = new Block()
-    ends = []
+    pushNode(root.children.splice(0, 1)[0], this)
     this.push(null)
   })
 
