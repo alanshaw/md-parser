@@ -18,9 +18,31 @@ function Element () {
 }
 inherits(Element, Node)
 
+Element.prototype.canAppendChild = function (node) {
+  return true
+}
+
 Element.prototype.appendChild = function (node) {
-  node.parent = this
-  return this.children.push(node)
+  var parent = this
+
+  // If the node can't be appended to this it must be appended to the parent
+  while (!parent.canAppendChild(node)) {
+    parent = parent.parent
+  }
+
+  node.parent = parent
+
+  return parent.children.push(node)
+}
+
+function Ul () {
+  Element.call(this)
+  this.tagName = "ul"
+}
+inherits(Ul, Element)
+
+Ul.prototype.canAppendChild = function (node) {
+  return node.tagName == "li"
 }
 
 function Text (content) {
@@ -44,6 +66,14 @@ function pushNode (node, ts) {
 
 function indentAmount (whitespace) {
   return whitespace[0] == " " ? Math.floor(whitespace.length / 4) : whitespace.length
+}
+
+function appendChild (parent, child) {
+  var p = parent
+  while (!p.canAppendChild(child)) {
+    p = p.parent
+  }
+  p.appendChild(child)
 }
 
 function parse (token, elements) {
@@ -72,8 +102,7 @@ function parse (token, elements) {
         // Are we already in a list?
         if (!li) {
           // ul start
-          var ul = new Element
-          ul.tagName = "ul"
+          var ul = new Ul
           elements.current.parent.appendChild(ul)
           elements.current = ul
 
@@ -86,8 +115,7 @@ function parse (token, elements) {
           if (li.indent == elements.next.indent) {
             li.parent.appendChild(elements.next)
           } else if (li.indent < elements.next.indent) {
-            var ul = new Element
-            ul.tagName = "ul"
+            var ul = new Ul
 
             elements.current.appendChild(ul)
             elements.current = ul
