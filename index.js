@@ -1,66 +1,38 @@
+var fs = require("fs")
 var mdtok = require("md-tokenizer")
 var through = require("through2")
 var duplexer = require("duplexer2")
-var inherits = require("util").inherits
+var Element = require("./dom/element")
+var Text = require("./dom/text")
 
-// Oh WOW lets re-implement a subset of the DOM
-// Yes, I'm actually doing this
-
-function Node () {
-  this.parent = null
+var parser = {
+  "heading": require("./parse/heading"),
+  "underline equal": require("./parse/underline-equal"),
+  "underline dash": require("./parse/underline-dash"),
+  "star": require("./parse/star"),
+  "list item ordered": require("./parse/list-item-ordered"),
+  "emphasis": require("./parse/emphasis"),
+  "code inline": require("./parse/code-inline"),
+  "gt": require("./parse/gt"),
+  "whitespace": require("./parse/whitespace"),
+  "code block": require("./parse/code-block"),
+  "text": require("./parse/text"),
+  "new line": require("./parse/new-line")
 }
 
-function Element () {
-  Node.call(this)
-  this.tagName = null
-  this.children = []
-  this.indent = 0
-}
-inherits(Element, Node)
-
-Element.prototype.canAppendChild = function (node) {
-  return true
-}
-
-Element.prototype.appendChild = function (node) {
-  var parent = this
-
-  // If the node can't be appended to this it must be appended to the parent
-  while (!parent.canAppendChild(node)) {
-    parent = parent.parent
+function parse (token, elements) {
+  // Tokens in preformatted elements are just text until next "code block" token
+  if (elements.current.tagName == "pre" && token.type != "code block") {
+    elements.current.appendChild(new Text(token.content))
+    return elements
   }
 
-  node.parent = parent
+  if (!parser[token.type]) {
+    throw new Error("Unknown token '" + token.type + "' with content '" + token.content + "'")
+  }
 
-  return parent.children.push(node)
+  return parser[token.type](token, elements)
 }
-
-function Ul () {
-  Element.call(this)
-  this.tagName = "ul"
-}
-inherits(Ul, Element)
-
-Ul.prototype.canAppendChild = function (node) {
-  return node.tagName == "li"
-}
-
-function Ol () {
-  Element.call(this)
-  this.tagName = "ol"
-}
-inherits(Ol, Element)
-
-Ul.prototype.canAppendChild = function (node) {
-  return node.tagName == "li"
-}
-
-function Text (content) {
-  Node.call(this)
-  this.content = content || ""
-}
-inherits(Text, Node)
-
 
 function pushNode (node, ts) {
   if (node instanceof Element) {
@@ -72,225 +44,6 @@ function pushNode (node, ts) {
   } else {
     ts.emit("error", new Error("Unknown node type " + node))
   }
-}
-
-function indentAmount (whitespace) {
-  return whitespace[0] == " " ? Math.floor(whitespace.length / 4) : whitespace.length
-}
-
-function appendChild (parent, child) {
-  var p = parent
-  while (!p.canAppendChild(child)) {
-    p = p.parent
-  }
-  p.appendChild(child)
-}
-
-function parse (token, elements) {
-  switch (token.type) {
-    case "heading":
-      if (elements.next && !elements.next.tagName) {
-        elements.next.tagName = "h" + token.content.length
-        elements.current.parent.appendChild(elements.next)
-        elements.current = elements.next
-        elements.next = null
-      } else {
-        elements.current.appendChild(new Text(token.content))
-      }
-      break
-    case "underline equal":
-      elements.current.tagName = "h1"
-      break
-    case "underline dash":
-      elements.current.tagName = "h2"
-      break
-    case "star":
-      if (elements.next && !elements.next.tagName) {
-        elements.next.tagName = "li"
-
-        // Get closest li
-        var li = elements.current
-
-        while (li != null && li.tagName != "li") {
-          li = li.parent
-        }
-
-        // Are we already in a list?
-        if (!li) {
-          // ul start
-          var ul = new Ul
-          elements.current.parent.appendChild(ul)
-          elements.current = ul
-
-          elements.current.appendChild(elements.next)
-          elements.current = elements.next
-          elements.next = null
-
-        } else {
-
-          if (li.indent == elements.next.indent) {
-            li.parent.appendChild(elements.next)
-          } else if (li.indent < elements.next.indent) {
-            var ul = new Ul
-
-            elements.current.appendChild(ul)
-            elements.current = ul
-            ul.appendChild(elements.next)
-
-          } else if (li.indent > elements.next.indent) {
-            var parents = []
-            var parent = elements.current
-
-            while (parent) {
-              if (parent.tagName == "li") {
-                parents.unshift(parent)
-              }
-              parent = parent.parent
-            }
-
-            parents[elements.next.indent].parent.appendChild(elements.next)
-          }
-
-          elements.current = elements.next
-          elements.next = null
-        }
-
-      } else {
-        if (elements.current.tagName == "em") {
-          // em end
-          elements.current = elements.current.parent
-        } else {
-          // em start
-          var em = new Element
-          em.tagName = "em"
-          elements.current.appendChild(em)
-          elements.current = em
-        }
-      }
-      break
-    case "list item ordered":
-      if (elements.next && !elements.next.tagName) {
-        elements.next.tagName = "li"
-
-        // Get closest li
-        var li = elements.current
-
-        while (li != null && li.tagName != "li") {
-          li = li.parent
-        }
-
-        // Are we already in a list?
-        if (!li) {
-          // ul start
-          var ul = new Ul
-          elements.current.parent.appendChild(ul)
-          elements.current = ul
-
-          elements.current.appendChild(elements.next)
-          elements.current = elements.next
-          elements.next = null
-
-        } else {
-
-          if (li.indent == elements.next.indent) {
-            li.parent.appendChild(elements.next)
-          } else if (li.indent < elements.next.indent) {
-            var ol = new Ol
-
-            elements.current.appendChild(ol)
-            elements.current = ol
-            ol.appendChild(elements.next)
-
-          } else if (li.indent > elements.next.indent) {
-            var parents = []
-            var parent = elements.current
-
-            while (parent) {
-              if (parent.tagName == "li") {
-                parents.unshift(parent)
-              }
-              parent = parent.parent
-            }
-
-            parents[elements.next.indent].parent.appendChild(elements.next)
-          }
-
-          elements.current = elements.next
-          elements.next = null
-        }
-
-      } else {
-        // Just text
-        if (elements.next && !elements.next.tagName) {
-          elements.next.tagName = "p"
-          elements.current.parent.appendChild(elements.next)
-          elements.current = elements.next
-          elements.next = null
-        }
-        elements.current.appendChild(new Text(token.content))
-      }
-      break
-    case "emphasis":
-      if (elements.next && !elements.next.tagName) {
-        elements.next.tagName = "p"
-        elements.current.parent.appendChild(elements.next)
-        elements.current = elements.next
-        elements.next = null
-      }
-
-      if (elements.current.tagName == "em") {
-        // em end
-        elements.current = elements.current.parent
-      } else {
-        // em start
-        var em = new Element
-        em.tagName = "em"
-        elements.current.appendChild(em)
-        elements.current = em
-      }
-      break
-    case "code inline":
-      if (elements.next && !elements.next.tagName) {
-        elements.next.tagName = "p"
-        elements.current.parent.appendChild(elements.next)
-        elements.current = elements.next
-        elements.next = null
-      }
-
-      if (elements.current.tagName == "code") {
-        // code end
-        elements.current = elements.current.parent
-      } else {
-        // code start
-        var code = new Element
-        code.tagName = "code"
-        elements.current.appendChild(code)
-        elements.current = code
-      }
-      break
-    case "whitespace":
-      if (elements.next && !elements.next.tagName) {
-        elements.next.indent = indentAmount(token.content)
-      } else {
-        elements.current.appendChild(new Text(token.content))
-      }
-      break
-    case "text":
-      if (elements.next && !elements.next.tagName) {
-        elements.next.tagName = "p"
-        elements.current.parent.appendChild(elements.next)
-        elements.current = elements.next
-        elements.next = null
-      }
-      elements.current.appendChild(new Text(token.content))
-      break
-    case "new line":
-      elements.next = new Element
-      break
-    default: throw new Error("Unknown token '" + token.type + "' with content '" + token.content + "'")
-  }
-
-  return elements
 }
 
 module.exports = function (opts) {
